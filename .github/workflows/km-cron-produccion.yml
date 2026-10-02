@@ -1,0 +1,42 @@
+# .github/workflows/km-cron-produccion.yml
+# Planificador externo de KM Cron Gate 1.0.1 para kmbeauty.es (One.com no ofrece cron del servidor).
+# Requiere el secreto de repositorio KM_CRON_SECRET_PROD (el mismo valor que KM Cron Gate muestra una vez).
+# Repositorio PUBLICO Xcreador/km-ops (decision de Joan, opcion A): sin coste de minutos. No contiene secretos ni codigo propietario.
+# Los registros de Actions son publicos: el workflow solo imprime el codigo HTTP y si la ejecucion fue correcta.
+# El secreto nunca se imprime: solo se usa para firmar HMAC-SHA256("t.n").
+name: KM Cron (produccion)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub puede retrasar ejecuciones programadas unos minutos
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: km-cron-produccion
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Llamada firmada a KM Cron Gate
+        env:
+          KM_CRON_SECRET: ${{ secrets.KM_CRON_SECRET_PROD }}
+          KM_CRON_URL: https://kmbeauty.es/wp-json/km-cron/v1/run
+        run: |
+          set -euo pipefail
+          if [ -z "${KM_CRON_SECRET}" ]; then echo "Falta el secreto KM_CRON_SECRET_PROD"; exit 1; fi
+          t=$(date +%s)
+          n=$(openssl rand -hex 16)
+          s=$(printf '%s' "${t}.${n}" | openssl dgst -sha256 -hmac "${KM_CRON_SECRET}" -r | cut -d' ' -f1)
+          code=$(curl -sS -o resp.json -w '%{http_code}' --max-time 60 -X POST \
+            -H "X-KM-Cron: KMCron t=${t},n=${n},s=${s}" \
+            -H "User-Agent: km-cron-github/1.0" "${KM_CRON_URL}")
+          echo "HTTP ${code}"
+          if grep -q '"ok":true' resp.json; then echo "ok"; else echo "sin ok (ver Cron KM en el panel)"; fi
+          rm -f resp.json
+          # 200 = ejecutado; 429 = intervalo minimo/bloqueo (no es error)
+          if [ "${code}" != "200" ] && [ "${code}" != "429" ]; then exit 1; fi
